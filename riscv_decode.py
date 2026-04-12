@@ -148,21 +148,50 @@ def imm_uj(inst):
     return sign_extend(imm_raw, 21)
 
 
+def decode_instruction(inst):
+    """Decode a 32-bit instruction word into fields for the simulator (no I/O)."""
+    inst &= 0xFFFFFFFF
+    rd = (inst >> 7) & 0x1F
+    funct3 = (inst >> 12) & 0x7
+    rs1 = (inst >> 15) & 0x1F
+    rs2 = (inst >> 20) & 0x1F
+    funct7 = (inst >> 25) & 0x7F
+    opcode = inst & 0x7F
+    inst_type = get_instruction_type(opcode)
+    mnemonic = decode_operation(opcode, funct3, funct7)
+
+    imm = None
+    if inst_type == "I":
+        imm = imm_i(inst)
+    elif inst_type == "S":
+        imm = imm_s(inst)
+    elif inst_type == "SB":
+        imm = imm_sb(inst)
+    elif inst_type == "UJ":
+        imm = imm_uj(inst)
+
+    return {
+        "inst": inst,
+        "opcode": opcode,
+        "funct3": funct3,
+        "funct7": funct7,
+        "rd": rd,
+        "rs1": rs1,
+        "rs2": rs2,
+        "type": inst_type,
+        "mnemonic": mnemonic,
+        "imm": imm,
+    }
+
+
 def decode_print_binary(bits):
     # Convert the binary instruction into an integer
     inst = parse_32bits_binary(bits)
-
-    # Extract instruction fields using shifts and masks
-    rd     = (inst >> 7)  & 0x1F      # Destination register
-    funct3 = (inst >> 12) & 0x7       # Function field (3 bits)
-    rs1    = (inst >> 15) & 0x1F      # Source register 1
-    rs2    = (inst >> 20) & 0x1F      # Source register 2
-    funct7 = (inst >> 25) & 0x7F      # Function field (7 bits)
-    opcode = inst & 0x7F              # Opcode is the lowest 7 bits
-
-    # Determine instruction type and operation
-    inst_type = get_instruction_type(opcode)
-    op = decode_operation(opcode, funct3, funct7)
+    d = decode_instruction(inst)
+    inst_type = d["type"]
+    op = d["mnemonic"]
+    rd, rs1, rs2 = d["rd"], d["rs1"], d["rs2"]
+    funct3, funct7, opcode = d["funct3"], d["funct7"], d["opcode"]
 
     print(f"Instruction Type: {inst_type}")
     print(f"Operation: {op}")
@@ -178,24 +207,24 @@ def decode_print_binary(bits):
     elif inst_type == "I":
         print(f"rd: x{rd}")
         print(f"rs1: x{rs1}")
-        print(f"imm: {imm_i(inst)}")
+        print(f"imm: {d['imm']}")
         print(f"funct3: {funct3}")
 
     elif inst_type == "S":
         print(f"rs1: x{rs1}")
         print(f"rs2: x{rs2}")
-        print(f"imm: {imm_s(inst)}")
+        print(f"imm: {d['imm']}")
         print(f"funct3: {funct3}")
 
     elif inst_type == "SB":
         print(f"rs1: x{rs1}")
         print(f"rs2: x{rs2}")
-        print(f"imm: {imm_sb(inst)}")
+        print(f"imm: {d['imm']}")
         print(f"funct3: {funct3}")
 
     elif inst_type == "UJ":
         print(f"rd: x{rd}")
-        print(f"imm: {imm_uj(inst)}")
+        print(f"imm: {d['imm']}")
 
     else:
         print(f"opcode: 0x{opcode:02X}")
