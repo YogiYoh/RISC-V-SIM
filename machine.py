@@ -1,40 +1,70 @@
-"""CPU state, instruction fetch (little-endian), and decode via hw3."""
-
 from riscv_decode import decode_instruction
 
-NUM_REGS = 32
-DEFAULT_MEM_BYTES = 1 << 16  # 64 KiB byte-addressable memory
+# Global CPU state
+pc = 0
+next_pc = 0
 
-class MachineState:
-    def __init__(self, mem_size=DEFAULT_MEM_BYTES):
-        self.pc = 0
-        self.regs = [0] * NUM_REGS
-        self.mem = bytearray(mem_size)
+# Register file: 32 registers, all start at 0
+rf = [0] * 32
 
-    def fetch_word(self):
-        """Read one 32-bit instruction from mem[pc:pc+4], RISC-V little-endian."""
-        p = self.pc
-        if p % 4 != 0:
-            raise ValueError(f"PC must be 4-byte aligned, got {p}")
-        if p + 4 > len(self.mem):
-            raise ValueError(f"Instruction fetch past memory: pc={p}")
-        m = self.mem
-        return m[p] | (m[p + 1] << 8) | (m[p + 2] << 16) | (m[p + 3] << 24)
+# Data memory: 32 words (each entry = 4 bytes), all start at 0
+d_mem = [0] * 32
 
-    def fetch_and_decode(self):
-        word = self.fetch_word()
-        return decode_instruction(word)
+# Instruction memory: loaded from the input text file
+instructions = []
+
+decode_list = []
 
 
-def _smoke_test():
-    # addi x1, x0, 5  -> 0x500093 (not 0x00508093; 5<<20 == 0x500000)
-    m = MachineState()
-    m.mem[0:4] = bytes([0x93, 0x00, 0x50, 0x00])
-    d = m.fetch_and_decode()
-    assert d["mnemonic"] == "addi" and d["rd"] == 1 and d["rs1"] == 0 and d["imm"] == 5, d
-    assert d["type"] == "I"
-    print("smoke test ok:", d)
+
+def load_program(filename):
+    """Read binary instruction strings from a text file into instructions[]."""
+    global instructions
+    with open(filename, "r") as f:
+        instructions = [line.strip() for line in f if line.strip()]
+
+
+def Fetch():
+    """Return the decoded instruction at the current PC and update next_pc."""
+    global pc, next_pc
+
+    # PC / 4 gives the index into the instruction list
+    index = pc // 4
+    raw_bits = instructions[index]
+
+    # Convert binary string to integer, then decode into fields
+    inst_int = int(raw_bits, 2)
+    decoded = decode_instruction(inst_int)
+    # Default next instruction is PC + 4
+    next_pc = pc + 4
+
+    return decoded
+
+
+def run_cpu():
+    global pc, next_pc, decode_list
+    
+    decode_list.clear()
+    pc = 0
+    
+    while (pc // 4) < len(instructions):
+        decode = Fetch()
+        decode_list.append(decode)
+        
+        pc = next_pc
 
 
 if __name__ == "__main__":
-    _smoke_test()
+    path = "instruction.txt"
+    load_program(path)
+
+    run_cpu()
+    
+    for i in range(len(decode_list)):
+        print(f"instruction {i}:")
+        
+        print(decode_list[i])
+        print()
+
+    
+    
