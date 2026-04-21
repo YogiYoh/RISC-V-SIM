@@ -1,0 +1,17 @@
+int Mem(int addr, int write_data)
+{
+    int data = 0;
+    int index = addr / 4;
+
+    if (MemRead)
+        data = d_mem[index];
+
+    if (MemWrite)
+    {
+        d_mem[index] = write_data;
+        cout << "memory 0x" << hex << addr
+             << " is modified to 0x" << d_mem[index] << endl;
+    }
+
+    return data;
+}
