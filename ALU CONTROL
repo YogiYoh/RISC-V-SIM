@@ -1,0 +1,21 @@
+void ALUControl(int funct3, int funct7)
+{
+    if (ALUOp == 0) alu_ctrl = 2; // ADD (lw, sw)
+
+    else if (ALUOp == 1) alu_ctrl = 6; // SUB (beq)
+
+    else if (ALUOp == 2) // R-type
+    {
+        if (funct3 == 0 && funct7 == 0) alu_ctrl = 2;      // add
+        else if (funct3 == 0 && funct7 == 32) alu_ctrl = 6;// sub
+        else if (funct3 == 7) alu_ctrl = 0;                // and
+        else if (funct3 == 6) alu_ctrl = 1;                // or
+    }
+
+    else if (ALUOp == 3) // I-type
+    {
+        if (funct3 == 0) alu_ctrl = 2; // addi
+        else if (funct3 == 7) alu_ctrl = 0; // andi
+        else if (funct3 == 6) alu_ctrl = 1; // ori
+    }
+}
