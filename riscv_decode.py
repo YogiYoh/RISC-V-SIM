@@ -149,7 +149,7 @@ def imm_uj(inst):
 
 
 def decode_instruction(inst):
-    """Decode a 32-bit instruction word into fields for the simulator (no I/O)."""
+    """Decode a 32-bit instruction word into fields for the simulator."""
     inst &= 0xFFFFFFFF
     rd = (inst >> 7) & 0x1F
     funct3 = (inst >> 12) & 0x7
