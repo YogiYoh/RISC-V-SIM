@@ -1,0 +1,20 @@
+int Execute(int op1, int op2, int imm)
+{
+    int result = 0;
+
+    switch (alu_ctrl)
+    {
+    case 0: result = op1 & op2; break; // AND
+    case 1: result = op1 | op2; break; // OR
+    case 2: result = op1 + op2; break; // ADD
+    case 6: result = op1 - op2; break; // SUB
+    }
+
+    // Zero flag
+    alu_zero = (result == 0);
+
+    // Branch target (FIXED)
+    branch_target = pc + imm;
+
+    return result;
+}

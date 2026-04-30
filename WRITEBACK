@@ -1,0 +1,14 @@
+void WriteBack(int rd, int alu_result, int mem_data)
+{
+    if (RegWrite && rd != 0)
+    {
+        int value = MemToReg ? mem_data : alu_result;
+
+        rf[rd] = value;
+
+        cout << "x" << rd << " is modified to 0x"
+             << hex << value << endl;
+    }
+
+    total_clock_cycles++;
+}
