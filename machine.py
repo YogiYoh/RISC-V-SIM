@@ -655,6 +655,14 @@ def run_pipeline_cpu():
                         next_if_id = {"valid": True, "inst": inst_int, "pc": pc}
                         pc += 4
 
+            else:
+                # Pipeline is empty at IF/ID but PC still points at work to do.
+                # This happens after stalls/control transfers, so fetch can resume here.
+                if pc_in_range():
+                    inst_int = int(instructions[pc // 4], 2)
+                    next_if_id = {"valid": True, "inst": inst_int, "pc": pc}
+                    pc += 4
+
 
         # ================= PIPELINE REGISTER UPDATE ================= #
         # This is the "clock edge" — everything moves forward one stage
