@@ -340,38 +340,100 @@ def run_cpu():
     print(f"total execution time is {total_clock_cycles} cycles")
 
 
+# ================= PIPELINE OVERVIEW ================= #
+# This CPU implements a 5-stage RISC-V pipeline:
+#
+#   1. IF  (Instruction Fetch)
+#   2. ID  (Instruction Decode)
+#   3. EX  (Execute / ALU)
+#   4. MEM (Data Memory Access)
+#   5. WB  (Write Back)
+#
+# Instead of executing one instruction at a time (single-cycle CPU),
+# multiple instructions are processed simultaneously in different stages.
+#
+# Each stage communicates using pipeline registers:
+#   if_id  → holds IF output for ID stage
+#   id_ex  → holds ID output for EX stage
+#   ex_mem → holds EX output for MEM stage
+#   mem_wb → holds MEM output for WB stage
+#
+# This creates instruction overlap, which increases performance.
+
+
+# ================= PIPELINE REGISTERS ================= #
+# These act like "buffers" between hardware pipeline stages.
+# Each cycle, data moves forward one stage.
+
+if_id = {"valid": False}   # IF → ID buffer (instruction fetched)
+id_ex = {"valid": False}   # ID → EX buffer (decoded instruction + control signals)
+ex_mem = {"valid": False}  # EX → MEM buffer (ALU result + store data)
+mem_wb = {"valid": False}  # MEM → WB buffer (final result for register writeback)
+
+
+# ================= PIPELINE EXECUTION MODEL ================= #
+# The pipeline runs inside run_pipeline_cpu()
+#
+# Each loop iteration = ONE CLOCK CYCLE
+# NOT one instruction completion.
+#
+# That means:
+# - Stage 1 executes for instruction A
+# - Stage 2 executes for instruction A while Stage 1 executes for B
+# - Stage 3 executes for A while others progress, etc.
+
+
 def run_pipeline_cpu():
     """
-    5-stage pipeline simulation (IF → ID → EX → MEM → WB per cycle).
-    This version follows the project handout's no-forwarding requirement:
-    RAW hazards hold IF/ID and PC until the producer reaches WB.
-    Branches and jumps stall fetch until the target is known in EX.
+    5-stage pipeline simulation (EXTRA CREDIT IMPLEMENTATION)
+
+    Key idea:
+    - Each instruction flows through IF → ID → EX → MEM → WB
+    - All stages operate in parallel (like hardware)
+    - Pipeline registers store intermediate values between stages
     """
+
+    # ================= PIPELINE INITIALIZATION ================= #
+    # Reset CPU state and pipeline registers before starting execution
+
     global pc, total_clock_cycles, alu_ctrl
     global if_id, id_ex, ex_mem, mem_wb
 
     pc = 0
     total_clock_cycles = 0
-    if_id = {"valid": False}
-    id_ex = {"valid": False}
-    ex_mem = {"valid": False}
-    mem_wb = {"valid": False}
+
+    if_id = {"valid": False}   # no instruction in IF/ID initially
+    id_ex = {"valid": False}   # no instruction in ID/EX initially
+    ex_mem = {"valid": False}  # no instruction in EX/MEM initially
+    mem_wb = {"valid": False}  # no instruction in MEM/WB initially
 
     finished = False
 
+
+    # ================= HELPER FUNCTIONS ================= #
+
+    # Checks if PC is still within program bounds
     def pc_in_range():
         return 0 <= (pc // 4) < len(instructions)
 
+    # Returns registers used by instruction (for hazard detection)
     def source_regs(decoded):
+        # Used to detect RAW (Read After Write) hazards
         opcode = decoded["opcode"]
-        if opcode == 0x33:      # R-type
+
+        if opcode == 0x33:      # R-type uses rs1 and rs2
             return [decoded["rs1"], decoded["rs2"]]
-        if opcode in (0x13, 0x03, 0x67):  # I-type ALU, load, jalr
+
+        if opcode in (0x13, 0x03, 0x67):  # I-type, load, jalr
             return [decoded["rs1"]]
+
         if opcode in (0x23, 0x63):        # store, branch
             return [decoded["rs1"], decoded["rs2"]]
-        return []             # jal has no source registers
 
+        return []  # jal has no source registers
+
+
+    # Checks if a pipeline stage will write a register in the future
     def writes_pending(stage):
         return (
             stage.get("valid")
@@ -379,37 +441,58 @@ def run_pipeline_cpu():
             and stage["decoded"]["rd"] != 0
         )
 
+
+    # Detects RAW hazards between pipeline stages
     def hazard_registers(decoded):
-        needed = set(source_regs(decoded))
+        needed = set(source_regs(decoded))  # registers current instruction needs
         blocked = []
+
+        # Check ID/EX and EX/MEM for pending writes
         for stage in (id_ex, ex_mem):
             if writes_pending(stage):
                 rd = stage["decoded"]["rd"]
                 if rd in needed:
                     blocked.append(rd)
+
         return blocked
 
+
+    # Detects control instructions (branch/jump)
     def is_control(decoded):
         return decoded["opcode"] in (0x63, 0x6F, 0x67)
 
+
+    # ================= MAIN PIPELINE LOOP ================= #
     while not finished:
+
+        # Each loop iteration = ONE CLOCK CYCLE
         total_clock_cycles += 1
         print(f"\ncycle {total_clock_cycles}:")
 
-        # ----- WB -----
+
+        # ================= WB (Write Back Stage) ================= #
+        # Final stage: writes result into register file
+
         if mem_wb.get("valid"):
             d = mem_wb["decoded"]
+
             if mem_wb["RegWrite"] and d["rd"] != 0:
+
+                # Select correct value depending on instruction type
                 if mem_wb.get("Jump") or mem_wb.get("JumpReg"):
                     value = mem_wb["link_pc"]
                 elif mem_wb["MemToReg"]:
                     value = mem_wb["mem_data"]
                 else:
                     value = mem_wb["alu_result"]
+
                 rf[d["rd"]] = value
                 print(f"WB: {reg_name(d['rd'])} = {hex(value)}")
 
-        # ----- MEM -----
+
+        # ================= MEM (Memory Stage) ================= #
+        # Handles loads and stores
+
         next_mem_wb = {"valid": False}
         mem_data_wb = 0
 
@@ -418,13 +501,16 @@ def run_pipeline_cpu():
             addr = ex_mem["alu_result"]
             index = addr // 4
 
+            # Load operation
             if ex_mem["MemRead"]:
                 mem_data_wb = d_mem[index]
 
+            # Store operation
             if ex_mem["MemWrite"]:
                 d_mem[index] = ex_mem["op2"]
                 print(f"MEM: memory[{hex(addr)}] = {hex(d_mem[index])}")
 
+            # Pass results to WB stage
             next_mem_wb = {
                 "valid": True,
                 "decoded": d,
@@ -437,7 +523,10 @@ def run_pipeline_cpu():
                 "link_pc": ex_mem.get("link_pc"),
             }
 
-        # ----- EX -----
+
+        # ================= EX (Execute Stage) ================= #
+        # ALU operations + branch/jump decision logic
+
         next_ex_mem = {"valid": False}
         branch_taken = False
         new_pc = pc
@@ -445,11 +534,14 @@ def run_pipeline_cpu():
 
         if id_ex.get("valid"):
             d = id_ex["decoded"]
+
+            # Detect control hazard in EX stage
             control_in_ex = id_ex["Branch"] or id_ex["Jump"] or id_ex["JumpReg"]
 
             op1 = id_ex["op1"]
             op2 = id_ex["imm"] if id_ex["ALUSrc"] else id_ex["op2"]
 
+            # ALU operation execution
             ac = id_ex["alu_ctrl"]
             if ac == 0:
                 result = op1 & op2
@@ -465,23 +557,28 @@ def run_pipeline_cpu():
             zero = 1 if result == 0 else 0
 
             instr_pc = id_ex["pc"]
-            # imm_sb / imm_uj already yield byte offsets — do not shift branch imm again
+
+            # Branch target computation
             branch_target = instr_pc + id_ex["imm"]
 
+            # Branch decision
             if id_ex["Branch"] and zero:
                 branch_taken = True
                 new_pc = branch_target
 
+            # Jump decision
             if id_ex["Jump"]:
                 branch_taken = True
                 new_pc = instr_pc + id_ex["imm"]
 
+            # Jump register decision
             if id_ex["JumpReg"]:
                 branch_taken = True
                 new_pc = (op1 + id_ex["imm"]) & ~1
 
             link_pc = instr_pc + 4 if (id_ex["Jump"] or id_ex["JumpReg"]) else None
 
+            # Pass results to MEM stage
             next_ex_mem = {
                 "valid": True,
                 "decoded": d,
@@ -496,33 +593,42 @@ def run_pipeline_cpu():
                 "link_pc": link_pc,
             }
 
-        # ----- ID / IF -----
+
+        # ================= ID + IF (Decode + Fetch Stages) ================= #
+        # This stage also handles hazard detection and stalls
+
         next_id_ex = {"valid": False}
         next_if_id = {"valid": False}
 
+        # If branch is taken, flush incorrect instructions
         if branch_taken:
             pc = new_pc
             print("IF: stall (control transfer)")
+
         elif control_in_ex:
             print("IF: stall (control hazard)")
+
         else:
+
             if if_id.get("valid"):
                 inst = if_id["inst"]
                 d = decode_instruction(inst)
 
+                # RAW hazard detection (stall pipeline if needed)
                 blocked = hazard_registers(d)
+
                 if blocked:
-                    next_if_id = if_id
+                    next_if_id = if_id  # freeze pipeline stage
                     waiting = ", ".join(reg_name(r) for r in sorted(set(blocked)))
                     print(f"ID: stall (waiting for {waiting})")
+
                 else:
                     ControlUnit(d["opcode"])
                     ALUControl(d["funct3"], d["funct7"])
 
-                    imm_v = d["imm"]
-                    if imm_v is None:
-                        imm_v = 0
+                    imm_v = d["imm"] if d["imm"] is not None else 0
 
+                    # Pass decoded data into ID/EX pipeline register
                     next_id_ex = {
                         "valid": True,
                         "decoded": d,
@@ -541,6 +647,7 @@ def run_pipeline_cpu():
                         "JumpReg": JumpReg,
                     }
 
+                    # Fetch next instruction if no hazard
                     if is_control(d):
                         print("IF: stall (control hazard)")
                     elif pc_in_range():
@@ -548,18 +655,19 @@ def run_pipeline_cpu():
                         next_if_id = {"valid": True, "inst": inst_int, "pc": pc}
                         pc += 4
 
-            elif pc_in_range():
-                inst_int = int(instructions[pc // 4], 2)
-                next_if_id = {"valid": True, "inst": inst_int, "pc": pc}
-                pc += 4
+
+        # ================= PIPELINE REGISTER UPDATE ================= #
+        # This is the "clock edge" — everything moves forward one stage
 
         mem_wb = next_mem_wb
         ex_mem = next_ex_mem
         id_ex = next_id_ex
         if_id = next_if_id
 
+
         print(f"PC = {hex(pc)}")
 
+        # Stop when pipeline is empty and program is done
         if not (
             if_id.get("valid")
             or id_ex.get("valid")
@@ -569,9 +677,9 @@ def run_pipeline_cpu():
             if (pc // 4) >= len(instructions):
                 finished = True
 
+
     print("\nProgram finished")
     print(f"Total cycles: {total_clock_cycles}")
-
 
 def main():
     global USE_ABI_NAMES
