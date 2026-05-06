@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from riscv_decode import decode_instruction
 
 
@@ -38,6 +40,13 @@ Branch = 0     # Indicates a branch instruction
 ALUOp = 0      # High-level ALU operation category
 Jump = 0       # Jump (jal)
 JumpReg = 0    # Jump register (jalr)
+
+
+# Pipeline registers (5-stage / extra-credit mode)
+if_id = {"valid": False}
+id_ex = {"valid": False}
+ex_mem = {"valid": False}
+mem_wb = {"valid": False}
 
 
 # ================= ABI REGISTER NAMES ================= #
@@ -329,3 +338,265 @@ def run_cpu():
 
     print("program terminated:")
     print(f"total execution time is {total_clock_cycles} cycles")
+
+
+def run_pipeline_cpu():
+    """
+    5-stage pipeline simulation (IF → ID → EX → MEM → WB per cycle).
+    This version follows the project handout's no-forwarding requirement:
+    RAW hazards hold IF/ID and PC until the producer reaches WB.
+    Branches and jumps stall fetch until the target is known in EX.
+    """
+    global pc, total_clock_cycles, alu_ctrl
+    global if_id, id_ex, ex_mem, mem_wb
+
+    pc = 0
+    total_clock_cycles = 0
+    if_id = {"valid": False}
+    id_ex = {"valid": False}
+    ex_mem = {"valid": False}
+    mem_wb = {"valid": False}
+
+    finished = False
+
+    def pc_in_range():
+        return 0 <= (pc // 4) < len(instructions)
+
+    def source_regs(decoded):
+        opcode = decoded["opcode"]
+        if opcode == 0x33:      # R-type
+            return [decoded["rs1"], decoded["rs2"]]
+        if opcode in (0x13, 0x03, 0x67):  # I-type ALU, load, jalr
+            return [decoded["rs1"]]
+        if opcode in (0x23, 0x63):        # store, branch
+            return [decoded["rs1"], decoded["rs2"]]
+        return []             # jal has no source registers
+
+    def writes_pending(stage):
+        return (
+            stage.get("valid")
+            and stage.get("RegWrite")
+            and stage["decoded"]["rd"] != 0
+        )
+
+    def hazard_registers(decoded):
+        needed = set(source_regs(decoded))
+        blocked = []
+        for stage in (id_ex, ex_mem):
+            if writes_pending(stage):
+                rd = stage["decoded"]["rd"]
+                if rd in needed:
+                    blocked.append(rd)
+        return blocked
+
+    def is_control(decoded):
+        return decoded["opcode"] in (0x63, 0x6F, 0x67)
+
+    while not finished:
+        total_clock_cycles += 1
+        print(f"\ncycle {total_clock_cycles}:")
+
+        # ----- WB -----
+        if mem_wb.get("valid"):
+            d = mem_wb["decoded"]
+            if mem_wb["RegWrite"] and d["rd"] != 0:
+                if mem_wb.get("Jump") or mem_wb.get("JumpReg"):
+                    value = mem_wb["link_pc"]
+                elif mem_wb["MemToReg"]:
+                    value = mem_wb["mem_data"]
+                else:
+                    value = mem_wb["alu_result"]
+                rf[d["rd"]] = value
+                print(f"WB: {reg_name(d['rd'])} = {hex(value)}")
+
+        # ----- MEM -----
+        next_mem_wb = {"valid": False}
+        mem_data_wb = 0
+
+        if ex_mem.get("valid"):
+            d = ex_mem["decoded"]
+            addr = ex_mem["alu_result"]
+            index = addr // 4
+
+            if ex_mem["MemRead"]:
+                mem_data_wb = d_mem[index]
+
+            if ex_mem["MemWrite"]:
+                d_mem[index] = ex_mem["op2"]
+                print(f"MEM: memory[{hex(addr)}] = {hex(d_mem[index])}")
+
+            next_mem_wb = {
+                "valid": True,
+                "decoded": d,
+                "alu_result": ex_mem["alu_result"],
+                "mem_data": mem_data_wb,
+                "RegWrite": ex_mem["RegWrite"],
+                "MemToReg": ex_mem["MemToReg"],
+                "Jump": ex_mem.get("Jump", 0),
+                "JumpReg": ex_mem.get("JumpReg", 0),
+                "link_pc": ex_mem.get("link_pc"),
+            }
+
+        # ----- EX -----
+        next_ex_mem = {"valid": False}
+        branch_taken = False
+        new_pc = pc
+        control_in_ex = False
+
+        if id_ex.get("valid"):
+            d = id_ex["decoded"]
+            control_in_ex = id_ex["Branch"] or id_ex["Jump"] or id_ex["JumpReg"]
+
+            op1 = id_ex["op1"]
+            op2 = id_ex["imm"] if id_ex["ALUSrc"] else id_ex["op2"]
+
+            ac = id_ex["alu_ctrl"]
+            if ac == 0:
+                result = op1 & op2
+            elif ac == 1:
+                result = op1 | op2
+            elif ac == 2:
+                result = op1 + op2
+            elif ac == 6:
+                result = op1 - op2
+            else:
+                result = op1 + op2
+
+            zero = 1 if result == 0 else 0
+
+            instr_pc = id_ex["pc"]
+            # imm_sb / imm_uj already yield byte offsets — do not shift branch imm again
+            branch_target = instr_pc + id_ex["imm"]
+
+            if id_ex["Branch"] and zero:
+                branch_taken = True
+                new_pc = branch_target
+
+            if id_ex["Jump"]:
+                branch_taken = True
+                new_pc = instr_pc + id_ex["imm"]
+
+            if id_ex["JumpReg"]:
+                branch_taken = True
+                new_pc = (op1 + id_ex["imm"]) & ~1
+
+            link_pc = instr_pc + 4 if (id_ex["Jump"] or id_ex["JumpReg"]) else None
+
+            next_ex_mem = {
+                "valid": True,
+                "decoded": d,
+                "alu_result": result,
+                "op2": id_ex["op2"],
+                "MemRead": id_ex["MemRead"],
+                "MemWrite": id_ex["MemWrite"],
+                "RegWrite": id_ex["RegWrite"],
+                "MemToReg": id_ex["MemToReg"],
+                "Jump": id_ex["Jump"],
+                "JumpReg": id_ex["JumpReg"],
+                "link_pc": link_pc,
+            }
+
+        # ----- ID / IF -----
+        next_id_ex = {"valid": False}
+        next_if_id = {"valid": False}
+
+        if branch_taken:
+            pc = new_pc
+            print("IF: stall (control transfer)")
+        elif control_in_ex:
+            print("IF: stall (control hazard)")
+        else:
+            if if_id.get("valid"):
+                inst = if_id["inst"]
+                d = decode_instruction(inst)
+
+                blocked = hazard_registers(d)
+                if blocked:
+                    next_if_id = if_id
+                    waiting = ", ".join(reg_name(r) for r in sorted(set(blocked)))
+                    print(f"ID: stall (waiting for {waiting})")
+                else:
+                    ControlUnit(d["opcode"])
+                    ALUControl(d["funct3"], d["funct7"])
+
+                    imm_v = d["imm"]
+                    if imm_v is None:
+                        imm_v = 0
+
+                    next_id_ex = {
+                        "valid": True,
+                        "decoded": d,
+                        "op1": rf[d["rs1"]],
+                        "op2": rf[d["rs2"]],
+                        "imm": imm_v,
+                        "pc": if_id["pc"],
+                        "alu_ctrl": alu_ctrl,
+                        "RegWrite": RegWrite,
+                        "MemRead": MemRead,
+                        "MemWrite": MemWrite,
+                        "MemToReg": MemToReg,
+                        "ALUSrc": ALUSrc,
+                        "Branch": Branch,
+                        "Jump": Jump,
+                        "JumpReg": JumpReg,
+                    }
+
+                    if is_control(d):
+                        print("IF: stall (control hazard)")
+                    elif pc_in_range():
+                        inst_int = int(instructions[pc // 4], 2)
+                        next_if_id = {"valid": True, "inst": inst_int, "pc": pc}
+                        pc += 4
+
+            elif pc_in_range():
+                inst_int = int(instructions[pc // 4], 2)
+                next_if_id = {"valid": True, "inst": inst_int, "pc": pc}
+                pc += 4
+
+        mem_wb = next_mem_wb
+        ex_mem = next_ex_mem
+        id_ex = next_id_ex
+        if_id = next_if_id
+
+        print(f"PC = {hex(pc)}")
+
+        if not (
+            if_id.get("valid")
+            or id_ex.get("valid")
+            or ex_mem.get("valid")
+            or mem_wb.get("valid")
+        ):
+            if (pc // 4) >= len(instructions):
+                finished = True
+
+    print("\nProgram finished")
+    print(f"Total cycles: {total_clock_cycles}")
+
+
+def main():
+    global USE_ABI_NAMES
+
+    filename = input("Enter the program file name to run:\n").strip()
+    mode = input("Enter 1 for single-cycle, 2 for pipelined:\n").strip()
+
+    path = Path(filename)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+
+    # PDF only requires the filename prompt; Part 1 vs Part 2 init follows the handout samples.
+    if "part2" in path.name.lower():
+        init_part2()
+        USE_ABI_NAMES = True
+    else:
+        init_part1()
+        USE_ABI_NAMES = False
+
+    load_program(path)
+    if mode == "2":
+        run_pipeline_cpu()
+    else:
+        run_cpu()
+
+
+if __name__ == "__main__":
+    main()
